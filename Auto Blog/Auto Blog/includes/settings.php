@@ -1,123 +1,101 @@
 <?php
-// Tambahkan ini ke file utama plugin Anda, misal autoblog-plugin.php
-
-add_action('admin_menu', function() {
-    add_menu_page('Autoblog Settings', 'Autoblog', 'manage_options', 'autoblog-settings', 'autoblog_settings_page');
+// Tambahkan menu di admin
+add_action('admin_menu', function(){
+    add_options_page(
+        'Autoblog Fulltext Settings',
+        'Autoblog Fulltext',
+        'manage_options',
+        'abft-settings',
+        'abft_settings_page'
+    );
 });
 
-function autoblog_settings_page() {
-    // Ambil data dari option
-    $options = get_option('autoblog_settings', [
-        'feeds' => [],
-        'interval' => 'hourly',
-        'limit_per_fetch' => 5,
-    ]);
-    if (!isset($options['feeds'])) $options['feeds'] = [];
+// AJAX RSS checker
+add_action('wp_ajax_abft_check_rss', function() {
+    $rss_url = esc_url_raw($_POST['rss_url'] ?? '');
+    require_once __DIR__ . '/rss-checker.php';
+    $result = abft_check_rss_url($rss_url);
+    wp_send_json($result);
+});
 
-    // Handle form submit
-    if ($_SERVER['REQUEST_METHOD'] === 'POST' && check_admin_referer('autoblog_save_settings')) {
-        // Simpan feeds
-        $feeds = [];
-        if (!empty($_POST['feeds'])) {
-            foreach ($_POST['feeds'] as $f) {
-                if (empty($f['url'])) continue;
-                $feeds[] = [
-                    'url' => esc_url_raw($f['url']),
-                    'active' => !empty($f['active']),
-                    'category_map' => intval($f['category_map']),
-                    'filter_keyword' => sanitize_text_field($f['filter_keyword']),
-                ];
-            }
-        }
-        // Tambah feed baru jika ada
-        if (!empty($_POST['new_feed']['url'])) {
-            $feeds[] = [
-                'url' => esc_url_raw($_POST['new_feed']['url']),
-                'active' => !empty($_POST['new_feed']['active']),
-                'category_map' => intval($_POST['new_feed']['category_map']),
-                'filter_keyword' => sanitize_text_field($_POST['new_feed']['filter_keyword']),
-            ];
-        }
-        $options['feeds'] = $feeds;
-        // Interval
-        $options['interval'] = in_array($_POST['interval'], ['hourly','twicedaily','daily']) ? $_POST['interval'] : 'hourly';
-        // Limit
-        $options['limit_per_fetch'] = max(1, intval($_POST['limit_per_fetch']));
-
-        update_option('autoblog_settings', $options);
-        echo '<div class="notice notice-success is-dismissible"><p>Settings saved!</p></div>';
+function abft_settings_page() {
+    // Simpan options
+    if (isset($_POST['abft_rss_url'])) {
+        check_admin_referer('abft_save_settings');
+        update_option('abft_rss_url', esc_url_raw($_POST['abft_rss_url']));
+        update_option('abft_fetch_limit', intval($_POST['abft_fetch_limit']));
+        update_option('abft_cron_interval_num', intval($_POST['abft_cron_interval_num']));
+        update_option('abft_cron_interval_unit', sanitize_text_field($_POST['abft_cron_interval_unit']));
+        echo '<div class="updated"><p>Pengaturan disimpan!</p></div>';
     }
+    $rss_url = esc_url(get_option('abft_rss_url', 'https://detik.com/rss'));
+    $fetch_limit = intval(get_option('abft_fetch_limit', 5));
+    $interval_num = intval(get_option('abft_cron_interval_num', 1));
+    $interval_unit = get_option('abft_cron_interval_unit', 'jam');
 
-    // Render form
-    $categories = get_categories(['hide_empty'=>0]);
+    // Satuan waktu yang diizinkan
+    $units = [
+        'menit' => 'Menit',
+        'jam'   => 'Jam',
+        'hari'  => 'Hari',
+        'bulan' => 'Bulan',
+        'tahun' => 'Tahun'
+    ];
     ?>
     <div class="wrap">
-        <h1>Autoblog Settings</h1>
+        <h1>Autoblog Fulltext Settings</h1>
         <form method="post">
-            <?php wp_nonce_field('autoblog_save_settings'); ?>
-
-            <h2>Daftar RSS Feed</h2>
-            <table class="widefat fixed" style="max-width:800px;">
-                <thead>
-                    <tr>
-                        <th style="width:30px;">Aktif</th>
-                        <th>Feed URL</th>
-                        <th>Kategori Map</th>
-                        <th>Filter Keyword</th>
-                        <th>Hapus</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach ($options['feeds'] as $i => $feed): ?>
-                    <tr>
-                        <td>
-                            <input type="checkbox" name="feeds[<?= $i ?>][active]" <?= $feed['active'] ? 'checked' : '' ?> />
-                        </td>
-                        <td>
-                            <input type="text" name="feeds[<?= $i ?>][url]" value="<?= esc_attr($feed['url']) ?>" style="width:100%;" />
-                        </td>
-                        <td>
-                            <select name="feeds[<?= $i ?>][category_map]">
-                                <?php foreach ($categories as $cat): ?>
-                                    <option value="<?= $cat->term_id ?>" <?= $feed['category_map']==$cat->term_id?'selected':'' ?>><?= esc_html($cat->name) ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </td>
-                        <td>
-                            <input type="text" name="feeds[<?= $i ?>][filter_keyword]" value="<?= esc_attr($feed['filter_keyword']) ?>" />
-                        </td>
-                        <td>
-                            <input type="checkbox" name="feeds[<?= $i ?>][delete]" />
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                    <tr>
-                        <td><input type="checkbox" name="new_feed[active]" /></td>
-                        <td><input type="text" name="new_feed[url]" style="width:100%;" placeholder="https://feed.example.com/rss" /></td>
-                        <td>
-                            <select name="new_feed[category_map]">
-                                <?php foreach ($categories as $cat): ?>
-                                    <option value="<?= $cat->term_id ?>"><?= esc_html($cat->name) ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </td>
-                        <td><input type="text" name="new_feed[filter_keyword]" /></td>
-                        <td></td>
-                    </tr>
-                </tbody>
+            <?php wp_nonce_field('abft_save_settings'); ?>
+            <table class="form-table">
+                <tr>
+                    <th scope="row"><label for="abft_rss_url">RSS Feed URL</label></th>
+                    <td>
+                        <input type="url" id="abft_rss_url" name="abft_rss_url" value="<?php echo $rss_url; ?>" style="width:350px;" required>
+                        <button type="button" id="abft_check_rss_btn" class="button">Cek RSS</button>
+                        <span id="abft_rss_status"></span>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><label for="abft_fetch_limit">Limit Post per Fetch</label></th>
+                    <td>
+                        <input type="number" id="abft_fetch_limit" name="abft_fetch_limit" value="<?php echo $fetch_limit; ?>" min="1" style="width:80px;"> 
+                        <span class="description">Berapa banyak post diambil setiap fetch.</span>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">Interval Cron</th>
+                    <td>
+                        <input type="number" min="1" id="abft_cron_interval_num" name="abft_cron_interval_num" value="<?php echo $interval_num; ?>" style="width:60px;" required>
+                        <select id="abft_cron_interval_unit" name="abft_cron_interval_unit">
+                            <?php foreach ($units as $key => $label): ?>
+                            <option value="<?php echo $key; ?>" <?php selected($interval_unit, $key); ?>><?php echo $label; ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <span class="description">Jadwalkan fetch setiap [angka] [satuan].</span>
+                    </td>
+                </tr>
             </table>
-            <br>
-            <h2>Interval Cron</h2>
-            <select name="interval">
-                <option value="hourly" <?= $options['interval']=='hourly'?'selected':'' ?>>Setiap Jam</option>
-                <option value="twicedaily" <?= $options['interval']=='twicedaily'?'selected':'' ?>>Dua Kali Sehari</option>
-                <option value="daily" <?= $options['interval']=='daily'?'selected':'' ?>>Harian</option>
-            </select>
-            <h2>Limit Post per Fetch</h2>
-            <input type="number" name="limit_per_fetch" min="1" max="20" value="<?= (int)$options['limit_per_fetch'] ?>" />
-            <br><br>
-            <button type="submit" class="button button-primary">Simpan</button>
+            <?php submit_button('Simpan'); ?>
         </form>
     </div>
+    <script>
+    (function($){
+        $('#abft_check_rss_btn').on('click', function(){
+            var btn = $(this);
+            var status = $('#abft_rss_status');
+            status.text('Mengecek...');
+            $.post(ajaxurl, {
+                action: 'abft_check_rss',
+                rss_url: $('#abft_rss_url').val()
+            }, function(res){
+                if(res.valid){
+                    status.html('<span style="color:green">RSS valid ✔</span>');
+                } else {
+                    status.html('<span style="color:red">RSS tidak valid ✖</span>');
+                }
+            });
+        });
+    })(jQuery);
+    </script>
     <?php
 }
